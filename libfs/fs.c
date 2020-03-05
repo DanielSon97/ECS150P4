@@ -45,12 +45,11 @@ struct __attribute__((__packed__)) fileDescriptor {
     int offset;
 };
 
-//intialize variables for meta-information blocks*/
+/*intialize variables for meta-information blocks*/
 struct superBlock *sb;
 uint16_t *fat;
 struct rootDirectory *root;
 struct fileDescriptor openedFiles[MAX_OPEN_FILE_DESCRIPTORS];
-
 
 /*functions*/
 //mounts the passed file system
@@ -393,13 +392,67 @@ int fs_close(int fd)
 
 int fs_stat(int fd)
 {
-	/* TODO: Phase 3 */
-    return 0;
+	/*CHECKING IF FD IS VALID*/
+    //return -1 if fd is out of bounds
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+        return -1;
+    }
+    //return -1 if fd is not opened
+    if (openedFiles[fd].filename[0] == '\0') {
+        return -1;
+    }
+
+    /*GETTING SIZE*/
+    //search through root directory and find file index
+    char *filename = (char*)openedFiles[fd].filename;
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //get corresponding size and return it
+    int size = root->files[fileIndex].size;
+    return size;
 }
 
 int fs_lseek(int fd, size_t offset)
 {
-	/* TODO: Phase 3 */
+	/*CHECKING IF FD IS VALID*/
+    //return -1 if fd is out of bounds
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+        return -1;
+    }
+    //return -1 if fd is not opened
+    if (openedFiles[fd].filename[0] == '\0') {
+        return -1;
+    }
+
+    /*CHECKING IF OFFSET IS VALID*/
+    //search through root directory and find file index
+    char *filename = (char*)openedFiles[fd].filename;
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //return -1 if offset is out of bounds
+    if (offset < 0 || offset > root->files[fileIndex].size) {
+        return -1;
+    }
+
+    /*SETTING OFFSET*/
+    //set new offset
+    openedFiles[fd].offset = offset;
+
+    //return 0 when offset is updated successfully 
     return 0;
 }
 
@@ -407,7 +460,7 @@ int fs_write(int fd, void *buf, size_t count)
 {
     /*CHECKING IF FD IS VALID*/
     //return -1 if fd is out of bounds
-    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+/*    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
         return -1;
     }
     //return -1 if fd is not opened
@@ -417,10 +470,10 @@ int fs_write(int fd, void *buf, size_t count)
     //skip if nothing to write
     if (count == 0) {
         return 0;
-    }
+    }*/
 
     /*FINDING FILE IN ROOT DIRECTORY*/
-    //search through root directory
+/*    //search through root directory
     char *filename = (char*)openedFiles[fd].filename;
     char *tempname;
     int fileIndex = -1;
@@ -432,11 +485,11 @@ int fs_write(int fd, void *buf, size_t count)
         }
     }
     //set current block index
-    uint16_t currentIndex = root->files[fileIndex].firstIndex;
+    uint16_t currentIndex = root->files[fileIndex].firstIndex;*/
 
     /*CHECKING HOW MUCH SPACE IS NEEDED*/
     //calculate how many total blocks are needed
-    int totalBytes = openedFiles[fd].offset + (int)count; 
+/*    int totalBytes = openedFiles[fd].offset + (int)count; 
     int totalBlocks = totalBytes / BLOCK_BYTES;
     if (totalBytes % BLOCK_BYTES > 0) {
         totalBlocks++;
@@ -450,11 +503,11 @@ int fs_write(int fd, void *buf, size_t count)
         currentIndex = fat[currentIndex];
     }
     //calculating how many more blocks we need
-    int blocksNeeded = totalBlocks - blocksHave;
+    int blocksNeeded = totalBlocks - blocksHave;*/
 
     /*ASSIGN/DEASSIGN BLOCKS TO MEET TOTAL NUMBER OF BLOCKS*/
     //if blocks need to be assigned, assign as many as possible
-    if (blocksNeeded > 0) {
+/*    if (blocksNeeded > 0) {
         //start assigning blocks as necessary
         int i = 0;
         while (blocksNeeded > 0 && i < sb->numDBlocks) {
@@ -474,21 +527,74 @@ int fs_write(int fd, void *buf, size_t count)
         int blockCount = 0;
         currentIndex = root->files[fileIndex].firstIndex;
         while (blocksNeeded != 0) {
-            blockCount++;
-            currentIndex = fat[currentIndex];
-            if (blockCount != totalBlocks) {
+            if (blockCount < totalBlocks) {
                 
             }
+            blockCount++;
+            currentIndex = fat[currentIndex];
+            
         }
     }
-
+    */
 
     return 0;
 }
 
 int fs_read(int fd, void *buf, size_t count)
 {
-	/* TODO: Phase 4 */
-    return 0;
-}
+	/*CHECKING IF FD IS VALID*/
+    //return -1 if fd is out of bounds
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+        return -1;
+    }
+    //return -1 if fd is not opened
+    if (openedFiles[fd].filename[0] == '\0') {
+        return -1;
+    }
+    //skip if nothing to read
+    if (count == 0) {
+        return 0;
+    }
 
+    /*FIND OUT NECESSARY VARIABLES*/
+    //search through root directory and find file index
+    char *filename = (char*)openedFiles[fd].filename;
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //finding first index
+    uint16_t currentIndex = root->files[fileIndex].firstIndex;
+    //finding number of total blocks
+    int totalBlocks = root->files[fileIndex].size / BLOCK_BYTES;
+    if (root->files[fileIndex].size % BLOCK_BYTES) {
+        totalBlocks++;
+    }
+
+    openedFiles[fd].offset = 2000;
+    /*COPY ONTO BOUNCE BUFFER*/
+    //copying over data blocks onto bounce buffer
+    char bounce[totalBlocks * BLOCK_BYTES];
+    int i = 0;
+    while (currentIndex != 0xFFFF) {
+        block_read(currentIndex + sb->dataIndex, bounce + (BLOCK_BYTES * i));
+        currentIndex = fat[currentIndex];
+        i++;
+    }
+    
+    /*COPY TO FINAL BUFFER WITH OFFSET AND COUNT*/
+    //calculate how many bytes can be read
+    int realCount = count - openedFiles[fd].offset;
+    //copy to final buffer
+    strncpy(buf, bounce + openedFiles[fd].offset, realCount);
+    //change offset
+    openedFiles[fd].offset = root->files[fileIndex].size;
+    
+    //return final count of bytes read if successfully read
+    return realCount;
+}
