@@ -7,35 +7,49 @@
 #include "disk.h"
 #include "fs.h"
 
+/*define constants*/
+#define BLOCK_BYTES 4096
+#define NUM_ROOTDIR_ENTRIES 128
+#define SIGNATURE_CHECK "ECS150FS"
+#define FILENAME_MAX_SIZE 16
+#define MAX_OPEN_FILE_DESCRIPTORS 32
+
 /*define data structures for meta-information blocks*/
 //packed data structure for superblock
 struct __attribute__((__packed__)) superBlock {
-    int8_t signature[8];        //Signature (must be equal to “ECS150FS”)
-    uint16_t numBlocks;          //Total amount of blocks of virtual disk
-    uint16_t rootIndex;          //Root directory block index
-    uint16_t dataIndex;          //Data block start index
-    uint16_t numDBlocks;         //Amount of data blocks
-    uint8_t numFBlocks;          //Number of blocks for FAT
-    int8_t unused[4079];        //Unused/Padding
+    int8_t signature[8];                        //Signature (must be equal to “ECS150FS”)
+    uint16_t numBlocks;                         //Total amount of blocks of virtual disk
+    uint16_t rootIndex;                         //Root directory block index
+    uint16_t dataIndex;                         //Data block start index
+    uint16_t numDBlocks;                        //Amount of data blocks
+    uint8_t numFBlocks;                         //Number of blocks for FAT
+    int8_t unused[4079];                        //Unused/Padding
 };
 
-//packed data structure for file descriptor
-struct __attribute__((__packed__)) fd {
-    int8_t filename[16];        //Filename (including NULL character)
-    uint32_t size;               //Size of the file (in bytes)
-    uint16_t firstIndex;        //Index of first data block
-    int8_t padding[10];         //Unused/Padding
+//packed data structure for file information
+struct __attribute__((__packed__)) fileInfo {
+    int8_t filename[FILENAME_MAX_SIZE];         //Filename (including NULL character)
+    uint32_t size;                              //Size of the file (in bytes)
+    uint16_t firstIndex;                        //Index of first data block
+    int8_t padding[10];                         //Unused/Padding
 };
 
 //packed data structure for root directory
 struct __attribute__((__packed__)) rootDirectory {
-    struct fd fds[128];    //entries of file discriptors
+    struct fileInfo files[NUM_ROOTDIR_ENTRIES];         //entries of file informations
+};
+
+//packed structure for basic file descriptor
+struct __attribute__((__packed__)) fileDescriptor {
+    int8_t filename[FILENAME_MAX_SIZE];
+    int offset;
 };
 
 //intialize variables for meta-information blocks*/
 struct superBlock *sb;
-int16_t *fat;
+uint16_t *fat;
 struct rootDirectory *root;
+struct fileDescriptor openedFiles[MAX_OPEN_FILE_DESCRIPTORS];
 
 
 /*functions*/
@@ -56,10 +70,8 @@ int fs_mount(const char *diskname)
         return -1;
     }
     //checking signature
-    char signatureCheck[9];
-    strcpy(signatureCheck, "ECS150FS"); 
-    for (int i = 0; signatureCheck[i] != '\0'; i++) { 
-        if ((char)(sb->signature[i]) != signatureCheck[i]) {
+    for (int i = 0; SIGNATURE_CHECK[i] != '\0'; i++) { 
+        if ((char)(sb->signature[i]) != SIGNATURE_CHECK[i]) {
             return -1;
         }
     }
@@ -89,12 +101,12 @@ int fs_mount(const char *diskname)
     }
     
     /*FILE ALLOCATION TABLE*/
-    fat = (int16_t*)malloc(sizeof(struct superBlock) * sb->numFBlocks);
+    fat = (uint16_t*)malloc(sizeof(struct superBlock) * sb->numFBlocks);
     //check if file allocation table can be read
     //cycle through each FAT block and read
     int fatIndex = 1;
     for (int i = 0; i < sb->numFBlocks; i++) {
-        if (block_read(fatIndex, fat + (2048 * i)) == -1) {
+        if (block_read(fatIndex, fat + ((BLOCK_BYTES / 2) * i)) == -1) {
             return -1;
         }
         fatIndex++;
@@ -121,7 +133,7 @@ int fs_umount(void)
     //write file allocation table data back to disk
     int fatIndex = 1;
     for (int i = 0; i < sb->numFBlocks; i++) {
-        if (block_write(fatIndex, fat + (2048 * i)) == -1) {
+        if (block_write(fatIndex, fat + ((BLOCK_BYTES / 2) * i)) == -1) {
             return -1;
         }
         fatIndex++;
@@ -172,12 +184,12 @@ int fs_info(void)
     //calculate rdir free ratio
     //set variable as max possible. cycle through and decrement for each empty fd
     int freeFd = 0;
-    for (int i = 0; i < 128; i++) {
-        if ((root->fds[i].filename[0]) == '\0') {
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        if ((root->files[i].filename[0]) == '\0') {
             freeFd++;
         }
     }
-    printf("rdir_free_ratio=%d/128\n", freeFd);
+    printf("rdir_free_ratio=%d/%d\n", freeFd, NUM_ROOTDIR_ENTRIES);
 
     //return 0 if info has been successfully printed
     return 0;
@@ -185,31 +197,197 @@ int fs_info(void)
 
 int fs_create(const char *filename)
 {
-	/* TODO: Phase 2 */
+    /*FILENAME CHECKING*/
+    //check if filename is valid or too long
+    if (strlen(filename) > FILENAME_MAX_SIZE || filename == NULL) {
+        return -1;
+    }
+    //check if filename is a duplicate
+    char *tempname;
+	for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            return -1;
+        }
+    }
+
+    /*SEARCHING FOR OPEN ROOT DIRECTORY ENTRY*/
+    //if checks pass, then find open root directory entry
+    int freeEntryIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        if ((root->files[i].filename[0]) == '\0') {
+            freeEntryIndex = i;
+            break;
+        }
+    }
+    //if no entries were open, then return -1
+    if (freeEntryIndex == -1) {
+        return -1;
+    }
+
+    /*MANAGING INFO IN NEW ENTRY*/
+    //updating filename and size for new entry
+    strcpy((char*)root->files[freeEntryIndex].filename, filename);
+    root->files[freeEntryIndex].size = 0;
+    
+    //find an empty spot in FAT to set to firstIndex
+    int freeFATIndex = -1;
+    for (int i = 0; i < sb->numDBlocks; i++) {
+        if (fat[i] == 0) {
+            freeFATIndex = i;
+            fat[i] = 0xFFFF;
+            break;
+        }
+    }
+    //if no space in FAT is open
+    if (freeFATIndex == -1) {
+        return -1;
+    }
+    root->files[freeEntryIndex].firstIndex = freeFATIndex;
+
+    //return 0 if successfully created file
     return 0;
 }
 
 int fs_delete(const char *filename)
 {
-	/* TODO: Phase 2 */
+	/*FILENAME CHECKING*/
+    //check if filename is valid
+    if (filename == NULL) {
+        return -1;
+    }
+
+    /*FINDING FILE WITH THE FILENAME*/
+    //check if filename exists
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //if filename doesn't exist, return -1
+    if (fileIndex == -1) {
+        return -1;
+    }
+
+    /*CHECK IF FILE IS OPEN*/
+    //cycle through and check opened file descriptors
+    for (int i = 0; i < MAX_OPEN_FILE_DESCRIPTORS; i++) {
+        tempname = (char*)openedFiles[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            return -1;
+        }
+    }
+
+    /*DELETE FILE*/
+    //remove data from FAT
+    uint16_t tempFATIndex = root->files[fileIndex].firstIndex;
+    uint16_t temp;
+    while (tempFATIndex != 0xFFFF) {
+        temp = tempFATIndex;
+        tempFATIndex = fat[tempFATIndex];
+        fat[temp] = 0;
+    }
+    //remove data from root directory
+    root->files[fileIndex].filename[0] = '\0';
+
+    //return 0 if successfully deleted file
     return 0;
 }
 
 int fs_ls(void)
 {
-	/* TODO: Phase 2 */
+	//check if a virtual disk was opened
+    if (sb == NULL) {
+        return -1;
+    }
+
+    /*PRINTING*/
+    //print first line prompt
+    printf("FS ls:\n");
+    //for loop to print details of each file
+    char *tempname;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        if ((root->files[i].filename[0]) != '\0') {
+            tempname = (char*)root->files[i].filename;
+            printf("file: %s, size: %d, data_blk: %d\n", tempname, root->files[i].size, root->files[i].firstIndex);
+        }
+    }
+
+    //return 0 if listed files
     return 0;
 }
 
 int fs_open(const char *filename)
 {
-	/* TODO: Phase 3 */
-    return 0;
+	/*FILENAME/MAX OPEN CHECKING*/
+    //check if filename is valid
+    if (filename == NULL) {
+        return -1;
+    }
+    //check if there are already max number of files opened
+    int numOpened = 0;
+    for (int i = 0; i < MAX_OPEN_FILE_DESCRIPTORS; i++) {
+        if (openedFiles[i].filename[0] != '\0') {
+            numOpened++;
+        }
+    }
+    //if there are max number of files opened, reteurn -1
+    if(numOpened == MAX_OPEN_FILE_DESCRIPTORS) {
+        return -1;
+    }
+    //check if filename exists
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //if filename doesn't exist, return -1
+    if (fileIndex == -1) {
+        return -1;
+    }
+    
+    /*OPENING FILE*/
+    //search for first entry that is free in openedFiles
+    int freeEntryIndex = -1;
+    for (int i = 0; i < MAX_OPEN_FILE_DESCRIPTORS; i++) {
+        if (openedFiles[i].filename[0] == '\0') {
+            freeEntryIndex = i;
+            break;
+        }
+    }
+    //make new file descriptor
+    strcpy((char*)openedFiles[freeEntryIndex].filename, filename);
+    openedFiles[freeEntryIndex].offset = 0;
+
+    //return file descriptor when file is successfully opened
+    return freeEntryIndex;
 }
 
 int fs_close(int fd)
 {
-	/* TODO: Phase 3 */
+	/*CHECKING IF FD IS VALID*/
+    //return -1 if fd is out of bounds
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+        return -1;
+    }
+    //return -1 if fd is not opened
+    if (openedFiles[fd].filename[0] == '\0') {
+        return -1;
+    }
+
+    /*CLOSING FILE */
+    openedFiles[fd].filename[0] = '\0';
+    openedFiles[fd].offset = 0;
+
+    //return 0 when file is successfully closed
     return 0;
 }
 
@@ -227,7 +405,84 @@ int fs_lseek(int fd, size_t offset)
 
 int fs_write(int fd, void *buf, size_t count)
 {
-	/* TODO: Phase 4 */
+    /*CHECKING IF FD IS VALID*/
+    //return -1 if fd is out of bounds
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+        return -1;
+    }
+    //return -1 if fd is not opened
+    if (openedFiles[fd].filename[0] == '\0') {
+        return -1;
+    }
+    //skip if nothing to write
+    if (count == 0) {
+        return 0;
+    }
+
+    /*FINDING FILE IN ROOT DIRECTORY*/
+    //search through root directory
+    char *filename = (char*)openedFiles[fd].filename;
+    char *tempname;
+    int fileIndex = -1;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        tempname = (char*)root->files[i].filename;
+        if(strcmp(filename, tempname) == 0) {
+            fileIndex = i;
+            break;
+        }
+    }
+    //set current block index
+    uint16_t currentIndex = root->files[fileIndex].firstIndex;
+
+    /*CHECKING HOW MUCH SPACE IS NEEDED*/
+    //calculate how many total blocks are needed
+    int totalBytes = openedFiles[fd].offset + (int)count; 
+    int totalBlocks = totalBytes / BLOCK_BYTES;
+    if (totalBytes % BLOCK_BYTES > 0) {
+        totalBlocks++;
+    }
+    //calculating how many blocks we have
+    int blocksHave = 0;
+    uint16_t lastIndex = currentIndex;
+    while (currentIndex != 0xFFFF) {
+        lastIndex = currentIndex;
+        blocksHave++;
+        currentIndex = fat[currentIndex];
+    }
+    //calculating how many more blocks we need
+    int blocksNeeded = totalBlocks - blocksHave;
+
+    /*ASSIGN/DEASSIGN BLOCKS TO MEET TOTAL NUMBER OF BLOCKS*/
+    //if blocks need to be assigned, assign as many as possible
+    if (blocksNeeded > 0) {
+        //start assigning blocks as necessary
+        int i = 0;
+        while (blocksNeeded > 0 && i < sb->numDBlocks) {
+            //if fat entry is empty then assign new block
+            if (fat[i] == 0) {
+                blocksNeeded--;
+                fat[i] = 0xFFFF;
+                fat[lastIndex] = i;
+                lastIndex = i;
+            }
+            i++;
+        }
+    }
+    //if blocks need to be deassigned, deassign excess blocks
+    else if (blocksNeeded < 0) {
+        //go to last blocked needed and deassign rest
+        int blockCount = 0;
+        currentIndex = root->files[fileIndex].firstIndex;
+        while (blocksNeeded != 0) {
+            blockCount++;
+            currentIndex = fat[currentIndex];
+            if (blockCount != totalBlocks) {
+                
+            }
+        }
+    }
+
+
     return 0;
 }
 
