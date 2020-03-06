@@ -1,0 +1,16 @@
+
+progs/my-test-10
+
+progs/my-test-100
+
+progs/my-test-1000
+
+progs/my-test-10k
+
+progs/my-test-10k-2
+
+*.fs
+
+*.d
+
+*.o
