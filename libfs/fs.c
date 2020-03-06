@@ -576,7 +576,7 @@ int fs_read(int fd, void *buf, size_t count)
         totalBlocks++;
     }
 
-    openedFiles[fd].offset = 2000;
+    //openedFiles[fd].offset = 2000;
     /*COPY ONTO BOUNCE BUFFER*/
     //copying over data blocks onto bounce buffer
     char bounce[totalBlocks * BLOCK_BYTES];
