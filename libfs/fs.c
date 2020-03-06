@@ -7,6 +7,9 @@
 #include "disk.h"
 #include "fs.h"
 
+#include <stdbool.h>
+#define FS_DEBUG false
+
 /*define constants*/
 #define BLOCK_BYTES 4096
 #define NUM_ROOTDIR_ENTRIES 128
@@ -224,6 +227,8 @@ int fs_create(const char *filename)
         return -1;
     }
 
+
+
     /*MANAGING INFO IN NEW ENTRY*/
     //updating filename and size for new entry
     strcpy((char*)root->files[freeEntryIndex].filename, filename);
@@ -297,6 +302,37 @@ int fs_delete(const char *filename)
     return 0;
 }
 
+int fs_printFileBlocks() 
+{
+    //check if a virtual disk was opened
+    if (sb == NULL) {
+        return -1;
+    }
+
+    /*PRINTING*/
+    //print first line prompt
+    printf("FS ls w/ blocks:\n");
+    //for loop to print details of each file
+    char *tempname;
+    for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
+        if ((root->files[i].filename[0]) != '\0') {
+            tempname = (char*)root->files[i].filename;
+            printf("file: %s, size: %d, data_blk: %d\n", tempname, 
+                root->files[i].size, root->files[i].firstIndex);
+            uint16_t index = fat[root->files[i].firstIndex];
+            int i = 2;
+            while (index != 0xFFFF) {
+                fprintf(stderr, "\tBlock[%d]=%d\n", i, index);
+                index = fat[index];
+                ++i;
+            }
+        }
+    }
+
+    //return 0 if listed files
+    return 0;   
+}
+
 int fs_ls(void)
 {
 	//check if a virtual disk was opened
@@ -312,7 +348,8 @@ int fs_ls(void)
     for (int i = 0; i < NUM_ROOTDIR_ENTRIES; i++) {
         if ((root->files[i].filename[0]) != '\0') {
             tempname = (char*)root->files[i].filename;
-            printf("file: %s, size: %d, data_blk: %d\n", tempname, root->files[i].size, root->files[i].firstIndex);
+            printf("file: %s, size: %d, data_blk: %d\n", tempname, 
+                root->files[i].size, root->files[i].firstIndex);
         }
     }
 
@@ -460,7 +497,7 @@ int fs_write(int fd, void *buf, size_t count)
 {
     /*CHECKING IF FD IS VALID*/
     //return -1 if fd is out of bounds
-/*    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
+    if (fd < 0 || fd > MAX_OPEN_FILE_DESCRIPTORS - 1) {
         return -1;
     }
     //return -1 if fd is not opened
@@ -470,10 +507,12 @@ int fs_write(int fd, void *buf, size_t count)
     //skip if nothing to write
     if (count == 0) {
         return 0;
-    }*/
+    }
+
+    if (FS_DEBUG) fprintf(stderr,"fs_write: fd=%d, count=%ld\n", fd, count);
 
     /*FINDING FILE IN ROOT DIRECTORY*/
-/*    //search through root directory
+    //search through root directory
     char *filename = (char*)openedFiles[fd].filename;
     char *tempname;
     int fileIndex = -1;
@@ -485,16 +524,19 @@ int fs_write(int fd, void *buf, size_t count)
         }
     }
     //set current block index
-    uint16_t currentIndex = root->files[fileIndex].firstIndex;*/
+    uint16_t currentIndex = root->files[fileIndex].firstIndex;
 
     /*CHECKING HOW MUCH SPACE IS NEEDED*/
     //calculate how many total blocks are needed
-/*    int totalBytes = openedFiles[fd].offset + (int)count; 
+    int totalBytes = openedFiles[fd].offset + (int)count; 
     int totalBlocks = totalBytes / BLOCK_BYTES;
     if (totalBytes % BLOCK_BYTES > 0) {
         totalBlocks++;
     }
-    //calculating how many blocks we have
+
+    if (FS_DEBUG) fprintf(stderr,"fs_write: fd=%d, totalBlocks=%d\n", fd, totalBlocks);
+
+    //calculating how many data blocks we have
     int blocksHave = 0;
     uint16_t lastIndex = currentIndex;
     while (currentIndex != 0xFFFF) {
@@ -503,21 +545,28 @@ int fs_write(int fd, void *buf, size_t count)
         currentIndex = fat[currentIndex];
     }
     //calculating how many more blocks we need
-    int blocksNeeded = totalBlocks - blocksHave;*/
+    int blocksNeeded = totalBlocks - blocksHave;
+
+    if (FS_DEBUG) fprintf(stderr,"fs_write: fd=%d, blocksNeeded=%d\n", fd, blocksNeeded);
 
     /*ASSIGN/DEASSIGN BLOCKS TO MEET TOTAL NUMBER OF BLOCKS*/
     //if blocks need to be assigned, assign as many as possible
-/*    if (blocksNeeded > 0) {
+    if (blocksNeeded > 0) {
         //start assigning blocks as necessary
         int i = 0;
         while (blocksNeeded > 0 && i < sb->numDBlocks) {
+            if (FS_DEBUG) fprintf(stderr, "fs_write: Finding Blocks blocksNeeded=%d, i=%d, lastIndex=%d\n",
+                blocksNeeded, i, lastIndex);
             //if fat entry is empty then assign new block
             if (fat[i] == 0) {
+                if (FS_DEBUG) fprintf(stderr, "fs_write: Assigning block %d\n", i);
                 blocksNeeded--;
-                fat[i] = 0xFFFF;
+                if (blocksNeeded == 0) fat[i] = 0xFFFF;
                 fat[lastIndex] = i;
                 lastIndex = i;
             }
+            if (FS_DEBUG) fs_printFileBlocks();
+
             i++;
         }
     }
@@ -535,7 +584,51 @@ int fs_write(int fd, void *buf, size_t count)
             
         }
     }
-    */
+
+    if (FS_DEBUG) fs_printFileBlocks();
+
+    if (FS_DEBUG) fprintf(stderr,"fs_write: fd=%d, totalBlocks=%d\n", 
+        fileIndex, totalBlocks);
+
+    /*COPY FROM BOUNCE BUFFER*/
+    //copying over data blocks into BLOCK_BYTES bounce buffer
+    char bounce[BLOCK_BYTES];
+    int i = 0;
+
+    /*COPY TO FINAL BUFFER WITH OFFSET AND COUNT*/
+    //calculate how many bytes can be read
+    int totalCount = count - openedFiles[fd].offset;
+    int realCount = totalCount;
+    int startOffset = openedFiles[fd].offset;
+    int copyCount = 0;
+    currentIndex = root->files[fileIndex].firstIndex;
+
+    for (i=0; i < totalBlocks; ++i) {
+        // after first block, reset startOffset to 0
+        if (i > 0) startOffset = 0;
+        // set size for strncopy
+        if (realCount > BLOCK_BYTES) {
+            copyCount = BLOCK_BYTES;
+        } else {
+            copyCount = realCount;
+        }
+        if (FS_DEBUG) fprintf(stderr, "fs_write: currentIndex=%d, start=%d, count=%d\n",
+            currentIndex, startOffset, realCount);
+        //copy to final buffer
+        strncpy(bounce + startOffset, buf+(i*BLOCK_BYTES), copyCount);
+        block_write(currentIndex + sb->dataIndex, bounce);
+        currentIndex = fat[currentIndex];
+        realCount = realCount - BLOCK_BYTES;
+    }  
+    
+    //change size and update offset
+    root->files[fileIndex].size = count + openedFiles[fd].offset;
+    openedFiles[fd].offset = root->files[fileIndex].size;
+    if (FS_DEBUG) fprintf(stderr, "fs_write: size=%d, offset=%d\n",
+        root->files[fileIndex].size, openedFiles[fd].offset);
+    
+    //return final count of bytes read if successfully read
+    return totalCount;
 
     return 0;
 }
@@ -556,6 +649,8 @@ int fs_read(int fd, void *buf, size_t count)
         return 0;
     }
 
+    if (FS_DEBUG) fprintf(stderr,"fs_read: fd=%d, count=%ld\n", fd, count);
+
     /*FIND OUT NECESSARY VARIABLES*/
     //search through root directory and find file index
     char *filename = (char*)openedFiles[fd].filename;
@@ -568,6 +663,7 @@ int fs_read(int fd, void *buf, size_t count)
             break;
         }
     }
+
     //finding first index
     uint16_t currentIndex = root->files[fileIndex].firstIndex;
     //finding number of total blocks
@@ -576,25 +672,42 @@ int fs_read(int fd, void *buf, size_t count)
         totalBlocks++;
     }
 
-    //openedFiles[fd].offset = 2000;
+    if (FS_DEBUG) fprintf(stderr,"fs_read: fileIndex=%d, totalBlocks=%d\n", 
+        fileIndex, totalBlocks);
+
     /*COPY ONTO BOUNCE BUFFER*/
-    //copying over data blocks onto bounce buffer
-    char bounce[totalBlocks * BLOCK_BYTES];
+    //copying over data blocks into BLOCK_BYTES bounce buffer
+    char bounce[BLOCK_BYTES];
     int i = 0;
-    while (currentIndex != 0xFFFF) {
-        block_read(currentIndex + sb->dataIndex, bounce + (BLOCK_BYTES * i));
-        currentIndex = fat[currentIndex];
-        i++;
-    }
-    
+
     /*COPY TO FINAL BUFFER WITH OFFSET AND COUNT*/
     //calculate how many bytes can be read
-    int realCount = count - openedFiles[fd].offset;
-    //copy to final buffer
-    strncpy(buf, bounce + openedFiles[fd].offset, realCount);
+    int totalCount = count - openedFiles[fd].offset;
+    int realCount = totalCount;
+    int startOffset = openedFiles[fd].offset;
+    int copyCount = 0;
+
+    for (i=0; i < totalBlocks; ++i) {
+        // after first block, reset startOffset to 0
+        if (i > 0) startOffset = 0;
+        // set size for strncopy
+        if (realCount > BLOCK_BYTES) {
+            copyCount = BLOCK_BYTES;
+        } else {
+            copyCount = realCount;
+        }
+        if (FS_DEBUG) fprintf(stderr, "fs_read: currentIndex=%d, start=%d, count=%d\n",
+            currentIndex, startOffset, realCount);
+        block_read(currentIndex + sb->dataIndex, bounce);
+        //copy to final buffer
+        strncpy(buf+(i*BLOCK_BYTES), bounce + startOffset, copyCount);
+        currentIndex = fat[currentIndex];
+        realCount = realCount - BLOCK_BYTES;
+    }  
+    
     //change offset
     openedFiles[fd].offset = root->files[fileIndex].size;
     
     //return final count of bytes read if successfully read
-    return realCount;
+    return totalCount;
 }

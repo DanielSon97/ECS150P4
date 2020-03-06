@@ -14,3 +14,9 @@ progs/my-test-10k-2
 *.d
 
 *.o
+
+*.a
+
+progs/test_fs.x
+
+*.x
